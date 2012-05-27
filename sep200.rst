@@ -161,6 +161,17 @@ parent type. This behaviour is coded into the metaclass and is thus
 hard to change; but of course code can undo this (with the aid of some
 C-level helpers) after the metaclass ``tp_new`` has run.
 
+Benchmark results
+-----------------
+
+The penalty of a branch-predicted table lookup in a micro-benchmark
+was 1.08 ns on a 1.87 GHz (Intel Core i7 Q 840).
+
+Changing to a format where the table was embedded directly, loosing
+one pointer indirection, did not change the numbers at all.  Also,
+because the var-object resizeability is already used up for the method
+table in heap-allocated types, this would be somewhat intricated.
+
 
 The custom slot ID space
 ------------------------
