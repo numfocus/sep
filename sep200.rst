@@ -31,6 +31,21 @@ This SEP introduces a metaclass on the C level which can be used to
 provide effectively an unlimited number of custom slots in the
 ``PyTypeObject``, without relying on the normal type inheritance.
 
+Examples uses:
+
+ * Make the NumPy array truly polymorphic at the C level, exporting
+   various vtables
+
+ * Implement "fast callables" on the C-level, so that, e.g., Cython
+   can call ``np.sin`` from C code with very little overhead, because
+   it finds a function pointer with a "dd->d" signature tagged to the
+   Python object
+
+ * Standardize the Cython ``cdef class`` vtable
+
+ * Standardize the internal memoryview representation of Cython
+   (which is much faster than passing around ``Py_buffer``)
+
 
 Implementation and lack of runtime dependency
 ---------------------------------------------
