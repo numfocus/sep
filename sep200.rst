@@ -50,11 +50,14 @@ Examples uses:
 Implementation and lack of runtime dependency
 ---------------------------------------------
 
-An implementation of the metaclass is available from
+An implementation is available from
 https://github.com/dagss/pyextensibletype
 
+The implementation is based on a) a metaclass ``extensibletype``, b) hijacking
+bit 22 to denote types with this metaclass in its hierarchy (see discussion).
+
 Having a run-time dependency would be a significant disadvantage.
-Instead, each participating library should contain the code for the
+Instead, each participating provider library should contain the code for the
 ``extensibletype`` metaclass, provided in a short header file
 (``include/extensibletype.h``). Because one needs to compare the
 metaclass by reference, each library always checks a central location
@@ -74,7 +77,8 @@ The metaclass is used to annotate each participating type with a table
 of custom slots::
 
     typedef struct {
-        unsigned long id;
+        uint32_t id;
+        uint32_t flags;
         void *data;
     } PyCustomSlot;
 
@@ -88,6 +92,15 @@ can be casted to an integer representing an offset that should be
 added to the ``PyObject*`` of instances of the type in order to look
 up some field.
 
+The ``flags`` field is present to indicate features that are
+backwards-compatible, such as appending to a vtable. It is present in
+``PyCustomSlot`` because a) it's convenient to skip one layer of
+indirection in the case that ``data`` is defined to be an offset on a
+``PyObject*``, b) this space would be lost to padding on 64-bit platforms
+anyway, c) one could imagine a slot being provided multiple times in
+the table with different flags (the current ``...Find`` function
+does not support this, but one can access the ``...Table`` directly).
+
 Custom slots are not required to have any order; types are expected to
 know which custom slot is most performance critical and put that first
 in the list.
@@ -97,32 +110,23 @@ to be found after a given location. For instance, if the NumPy array
 grows four different C vtables, then the last one can indicate that it
 should always be found as the 4th slot or later on any type, so that
 users can optimize for the common case of NumPy arrays. Other less
-featureful array types would then need to pre-pad the table to expose
-the slot. (This scheme should mean there's almost never branch misses
-for "typical" types; a "callable array" could however cause branch
-misses.)
+featureful array types would then need to pre-pad the table with ID
+``0x1`` (see below).  This scheme should mean there's almost never
+branch misses for the "typical" usecases, since each group of custom slots
+likely to be found together can negotiate on a position in the table
+which the branch predictor should assume.
 
 
 Consumer API
 ------------
 
-The consumer API is meant to be forwards-compatible with other ways of
-implementing the same concepts (like a PEP), and so doesn't mention the
-metaclass explicitly.
+The consumer API is found in ``include/customslots.h``. It is meant to
+be forwards-compatible with other ways of implementing the same
+concepts (like a PEP), and so doesn't mention the metaclass
+explicitly.
 
-All functions except the first can be called without holding the GIL,
-as long as you have a guaranteed reference to the type object.
-
-``PyCustomSlots_Init()``
-    **Always** call this function before any other
-    function, typically during module initialization.
-    As the function sets a static global variable defined in the header
-    file, this must be called *within every compilation unit*.
-
-    For now, this is the same as ``PyExtensibleType_Import`` below,
-    but if the mechanism changes (e.g. to a PEP) in the future this
-    could be made a no-op.
-
+All functions can be called without holding the GIL, as long as one
+has a guaranteed reference to the type object.
 
 ``PyCustomSlots_Check(obj)``
     Does the object support the protocol? Should be checked before using
@@ -134,17 +138,20 @@ as long as you have a guaranteed reference to the type object.
 ``PyCustomSlot *PyCustomSlots_Table(obj)``
     Get a pointer to the table
 
-``PyCustomSlot *PyCustomSlots_Find(PyObject *obj, unsigned long id, unsigned long mask)``
-    Search the table for a matching slot; returns ``NULL`` if none is found.
-    The comparison happens ``&`` the given mask (the ID can also contain flags
-    in some of the bits).
+``PyCustomSlot *PyCustomSlots_Find(PyObject *obj, uint32_t id, Py_ssize_t start)``
+    Search the table for a matching slot; returns `NULL` if none is found.
+    The search happens at the position given by `start`; usually you pass ``0``,
+    but if the custom slot is documented to always be found at a location ``>= n``
+    in the table, pass in ``n``.
 
 Provider API
 ------------
 
-To annotate a type with custom slots, basically read the metaclass
-source code and understand it. What changes is the definition of
-the type object; the basic steps are:
+The provider API is found in ``include/extensibletype.h``, and
+requires detailed knowledge of the implementation mechanism.  To
+annotate a type with custom slots, basically read the metaclass source
+code and understand it. What changes is the definition of the type
+object; the basic steps are:
 
  * Make the type object a ``PyHeapExtensibleTypeObject``. This is
    a "substruct" of ``PyHeapTypeObject`` rather than ``PyTypeObject``.
@@ -187,21 +194,25 @@ one pointer indirection, did not change the numbers at all.  Also,
 because the var-object resizeability is already used up for the method
 table in heap-allocated types, this would be somewhat intricated.
 
+For the metaclass checking strategy, there was no difference between
+only being able to match the metaclass itself, or also having the
+possibility of matching a metaclass subclass (as long as that
+possibility isn't taken, i.e. the direct match is ``likely``).
+
 
 The custom slot ID space
 ------------------------
 
-The ``unsigned long`` is expected to be at least 32 bits.
-
-The most significant 8 bits (of a 32 bit uint) denote a
+The most significant 8 bits of the ``uint32_t`` denote a
 "registrar". Each registrar determines the use of the remaining 24
 bits, but a recommendation, from most to least significant, is:
 
  * 8 bits: Registrar (required)
- * 8 bits: Which custom slot "idea"
+ * 16 bits: Which custom slot "idea"
  * 8 bits: Which backwards-incompatible version of the idea
- * 8 bits: Flags for backwards-compatible changes (like appending to the end
-   of a vtable)
+
+Backwards-compatible changes should be noted in the ``flag`` field
+rather than the ID.
 
 When lookup up a slot following this recommendation, one should
 therefore ``&`` the ID with the proper mask for the flags,
@@ -211,7 +222,7 @@ which is the purpose of the ``mask`` argument to ``PyCustomSlots_Find``
 Special IDs:
 
  * 0x00000000: Reserved for now
- * 0x00000001: Use if pre-padding table is needed
+ * 0x00000001: Use if pre-padding the table is needed
 
 ID space (most significant 8 bits):
 
@@ -225,14 +236,27 @@ ID space (most significant 8 bits):
 Discussion
 ----------
 
-The metaclass approach might be somewhat less elegant on the C level than
-various other approaches, like hijacking a bit in the flags. However, a
-metaclass is much safer with respect .
+Hijacking bit 22 in ``tp_flags`` has the following advantages:
 
-One are also not able to use metaclasses for other purposes. The author
-is not aware of any usecases for metaclasses for type implemented in C;
-if such usecases exists, one could support it by checking the entire
-metaclass hierarchy (check ``tp_base`` on the metaclass).
+ - Consumers don't have to call any ``PyCustomSlots_Init`` to import
+   a reference to the metaclass
+ 
+ - Consumers don't have to carry along a metaclass implementation just
+   in case they are imported before the first provider. (Keep in mind
+   that if the NumPy C API is refactored to be based on this mechanism,
+   there will be a lot of consumers.)
+
+ - It is (probably) microscopically faster if you need to subclass the
+   metaclass for some reason. No effect if you're not subclassing the
+   metaclass though (due to branch prediction working its wonders)
+
+The disadvantage is of course that we hijack a flag, and we have no guarantee
+that other Python libraries are not doing the same.
+
+At any rate, if a new Python version uses all available flag bits (and
+this SEP is not accomodated by any PEPs in the meantime), one can
+switch to walking ``ob_type`` and ``tp_base`` rather than checking
+``tp_flags``.
 
 As for inclusion as a PEP, that only works for new Python versions.
 Python-dev was consulted on the question [#]_, and Nick Coghlan's
