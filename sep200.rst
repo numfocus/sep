@@ -54,21 +54,14 @@ An implementation is available from
 https://github.com/dagss/pyextensibletype
 
 The implementation is based on a) a metaclass ``extensibletype``, b) hijacking
-bit 22 to denote types with this metaclass in its hierarchy (see discussion).
+``tp_flags`` bit 22 to denote types with this metaclass in its hierarchy (see discussion).
 
 Having a run-time dependency would be a significant disadvantage.
 Instead, each participating provider library should contain the code for the
 ``extensibletype`` metaclass, provided in a short header file
-(``include/extensibletype.h``). Because one needs to compare the
-metaclass by reference, each library always checks a central location
-for it::
-
-    try:
-        extensibletype = sys.modules.setdefault('_extensibletype', {})['extensibletype-v1']
-        # succeeded, ignore our own implementation of it
-    except KeyError:
-        # create it and insert it
-
+(``include/extensibletype.h``). The first such module that gets initialized
+puts the metaclass in the ``extensibletype_v1`` in the ``_extensibletype``
+module; later modules simply look up the metaclass there.
 
 The custom slot table
 ---------------------
