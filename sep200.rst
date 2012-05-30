@@ -141,40 +141,63 @@ Provider API
 ------------
 
 The provider API is found in ``include/extensibletype.h``, and
-requires detailed knowledge of the implementation mechanism.  To
-annotate a type with custom slots, basically read the metaclass source
-code and understand it. What changes is the definition of the type
-object; the basic steps are:
+requires detailed knowledge of the implementation mechanism.
 
- * Make the type object a ``PyHeapExtensibleTypeObject``. This is
-   a "substruct" of ``PyHeapTypeObject`` rather than ``PyTypeObject``.
-   This changes the initialization a little bit but was needed to make
-   types subclassable Python side.
+To allow sub-classing Python side, the "object struct" must be based on
+``PyHeapTypeObject`` rather than ``PyTypeObject``.
 
- * Set the metaclass (``ob_type`` in the type object)
+``static int PyExtensibleType_Ready(PyHeapExtensibleTypeObject *type, Py_ssize_t slot_table_size)``
+    Called to initialize a statically allocated extensible type.
+    The ``slot_table_size`` is used in the case of subclassing
+    another extensible type (see subclassing rules below).
 
- * Set ``etp_count`` and ``etp_custom_slots`` to the custom slot table
+    Before calling this function, ``etp_count`` and ``etp_custom_slots`` should
+    be filled in.
 
-Relevant snippet from ``demo/provider_c_code.h``::
+    The function a) imports the ``extensibletype`` metaclass and
+    sets ``type->ob_type`` to it, b) patches the ``etp_custom_slots`` table in
+    response to inheritance, c) calls ``PyType_Ready``,
+    d) updates ``tp_flags``.
 
-    PyTypeObject *extensibletype = PyExtensibleType_Import();
-    if (!extensibletype) return -1;
-    ((PyObject*)&Provider_Type)->ob_type = extensibletype;
-    Provider_Type.etp_count = 1;
-    Provider_Type.etp_custom_slots = my_custom_slots;
+    **Note**: In the current implementation, subclassing from another
+    extensible type (step d) is simply not implemented, and will raise
+    an exception. This support can be added when it is needed.
 
+``PyTypeObject *PyExtensibleType_Import()``
+    Get hold of the ``extensibletype`` metaclass directly. There's normally no
+    need to call this.
+    
 
-Subclasses
-----------
+Subclassing
+'''''''''''
 
-C subclasses must be explicit and care for themselves; we can't make
-``PyType_Ready`` magically know about this.
+*Statically allocated C subclasses:* Since ``etp_custom_slots`` is
+statically allocated, it should be over-allocated and padded with
+slots with ``0`` as ID. The number of non-zero slots should be filled
+in ``etp_count``, while the table size is passed to
+``PyExtensibleType_Ready``. The table is then modified to inherit the
+custom slots just like the built-in slots:
 
-If you subclass a type Python-side ("on the heap"), the metaclass
-``tp_new`` kicks in and copies the pointer to the table from the
-parent type. This behaviour is coded into the metaclass and is thus
-hard to change; but of course code can undo this (with the aid of some
-C-level helpers) after the metaclass ``tp_new`` has run.
+ - Slots are inherited from the parent class by prepending them to the
+   table. The (id, flags, data)-struct is simply copied by value -- it
+   is assumed that the data pointer will stay alive
+
+ - If the same ID is present in the custom slot table of the child,
+   the parent slot is not inherited
+
+ - If the final number of slots is larger than the count passed to
+   ``PyExtensibleType_Ready``, an exception is raised.
+
+*Heap-allocated Python classes:* The metaclass ensures that the custom
+slots of the parent is copied also to Python classes inheriting from
+classes with custom slots. However, there is no mechanism for changing
+the table of custom slots (the table pointer is simply set to the
+table of the superclass).
+
+Libraries can however subclass the ``extensibletype`` metaclass in
+order to (somehow) provide the ability for Python subclasses to
+modify the table (like a ``__customslots__`` class attribute or
+similar).
 
 Benchmark results
 -----------------
@@ -187,10 +210,13 @@ one pointer indirection, did not change the numbers at all.  Also,
 because the var-object resizeability is already used up for the method
 table in heap-allocated types, this would be somewhat intricated.
 
-For the metaclass checking strategy, there was no difference between
-only being able to match the metaclass itself, or also having the
-possibility of matching a metaclass subclass (as long as that
-possibility isn't taken, i.e. the direct match is ``likely``).
+There was no difference between checking ``ob_type->tp_flags`` and
+checking for a metaclass; ``ob_type->ob_type``.  For the metaclass
+checking strategy, there was no difference between only being able to
+match the metaclass itself, or also having the possibility of matching
+a metaclass subclass (as long as that possibility isn't taken,
+i.e. the direct match is ``likely``).
+
 
 
 The custom slot ID space
@@ -220,11 +246,14 @@ Special IDs:
 ID space (most significant 8 bits):
 
  * 0x00: Reserved
- * 0x01-0x0f: For internal/personal use, never use in released libraries
- * 0x10-0x6f: NumFOCUS SEPs, NumPy, SciPy
- * 0x70-0x7f: Cython
- * 0x80-...: Whoever asks
+ * 0x01: For internal/personal use, never use in released libraries
+ * 0x02: NumFOCUS SEPs, NumPy, SciPy
+ * 0x03: Cython
+ * 0x04-...: Whoever asks
 
+The ID space is intentially kept tight for now; because eventually one
+may want to dynamically allocate such IDs (like a dynamic interface
+interning scheme).
 
 Discussion
 ----------
