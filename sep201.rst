@@ -271,8 +271,7 @@ Example: The function::
 
     int f(double x, float* y);
 
-would, e.g., have the signature string ``"i:d&f"``. The format is:
-(Type of function, return value, arguments). 
+would, e.g., have the signature string ``"i:d&f"``.
 
 Return value and arguments would follow the PEP3118 extensions of the
 struct-module format string, but with some modifications:
