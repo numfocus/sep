@@ -77,17 +77,23 @@ of custom slots::
 
     typedef struct {
         uintptr_t id;
-        void *data;
+        union {
+            void *pointer;
+            Py_ssize_t objoffset;
+            uintptr_t flags;
+        } data;
     } PyCustomSlot;
 
 The ``id`` identifies the purpose of the slot.  Users querying an
 object for a C-level interface scan this custom slot table in its type
-for IDs they recognize. If an entry is found, ``data`` contains custom
-information (defined by whoever defined the ID). It will often be a
-pointer to a vtable, similar to slots like ``tp_as_buffer``.
-Alternatively it can be casted to an integer representing an offset
-that should be added to the instance ``PyObject*`` pointer in order to
-look up some field.
+for IDs they recognize.
+
+The meaning of the ``data`` attribute is defined by the custom slot in
+question.  For instance ``data.pointer`` can contain a pointer to a
+vtable (like ``tp_as_buffer``) or C-level run-time type information;
+``data.objoffset`` contains an offset which can be added to a
+``PyObject*`` to access an object field, or ``data.flags`` contain
+some flags for the object.
 
 Custom slots are not required to have any order; types are expected to
 know which custom slot is most performance critical and put that first
