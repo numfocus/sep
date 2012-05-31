@@ -62,7 +62,7 @@ to ensure that the custom slots table is inherited to subclasses
 created in Python.  See the discussion section for justifications for
 also using the flag bit.
 
-Having a run-time dependency would be a significant disadvantage.
+Requiring a common run-time dependency would be a significant disadvantage.
 Instead, each participating provider library should contain the code for the
 ``extensibletype`` metaclass, provided in a short header file
 (``include/extensibletype.h``). The first such module that gets initialized
