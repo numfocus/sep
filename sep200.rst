@@ -76,33 +76,52 @@ The metaclass is used to annotate each participating type with a table
 of custom slots::
 
     typedef struct {
-        uint32_t id;
-        uint32_t flags;
+        uintptr_t id;
         void *data;
     } PyCustomSlot;
 
-The ``id`` identifies the purpose of the slot and the ID space is
-described further down.  Users querying an object for a C-level
-interface scan this custom slot table in its type for IDs they
-recognize. If an entry is found, ``data`` contains custom information
-(defined by whoever defined the ID). It will often be a pointer to a
-vtable, similar to slots like ``tp_as_buffer``, but alternatively it
-can be casted to an integer representing an offset that should be
-added to the ``PyObject*`` of instances of the type in order to look
-up some field.
-
-The ``flags`` field is present to indicate features that are
-backwards-compatible, such as appending to a vtable. It is present in
-``PyCustomSlot`` because a) it's convenient to skip one layer of
-indirection in the case that ``data`` is defined to be an offset on a
-``PyObject*``, b) this space would be lost to padding on 64-bit platforms
-anyway, c) one could imagine a slot being provided multiple times in
-the table with different flags (the current ``...Find`` function
-does not support this, but one can access the ``...Table`` directly).
+The ``id`` identifies the purpose of the slot.  Users querying an
+object for a C-level interface scan this custom slot table in its type
+for IDs they recognize. If an entry is found, ``data`` contains custom
+information (defined by whoever defined the ID). It will often be a
+pointer to a vtable, similar to slots like ``tp_as_buffer``.
+Alternatively it can be casted to an integer representing an offset
+that should be added to the instance ``PyObject*`` pointer in order to
+look up some field.
 
 Custom slots are not required to have any order; types are expected to
 know which custom slot is most performance critical and put that first
 in the list.
+
+The ``id`` comes in two categories, statically defined ID and pointer
+ID.
+
+Statically defined IDs
+''''''''''''''''''''''
+
+These are indicated by the least significant bit being 1.  The
+ID space is partitioned as described in a separate section below.
+
+On could also use part of the static ID space for run-time allocated
+IDs in an interning scheme, as long as this doesn't cause any
+conflicts.
+
+
+Pointer ID
+''''''''''
+
+These are a memory address casted to an int. The least significant bit
+must be zero (i.e. an address aligned to at least 2 bytes, which
+should be the case for any relevant object).  For instance, if there's
+a run-time object specifying an "interface" that both the exporter and
+consumer has access to, then they can use its address be able to
+communicate.
+
+This SEP does not specify a specific scheme for such interface
+creation or any other interning scheme. There could in fact be
+multiple such schemes operating in parallel, since they will never claim
+the same address.
+
 
 Slot expected position
 ''''''''''''''''''''''
@@ -111,8 +130,8 @@ Slots can define an *expected position*, which consumers check before
 scanning the entire list. For instance, if the NumPy array grows four
 different C vtables, then the last one can indicate that it is
 expected to be found at the 4th slot. Other less featureful array
-types supporting that slot may pre-pad the table with ID ``0x1`` (see
-below) to put the slot in its preferred position. 
+types supporting that slot may pre-pad the table with ``{0x1, NULL}``
+entries to put the slot in its preferred position.
 
 The value of the expected position is in that the CPU can continue
 execution with the slot in that position while the check goes on in
@@ -149,10 +168,11 @@ has a guaranteed reference to the type object.
 ``PyCustomSlot *PyCustomSlots_Table(obj)``
     Get a pointer to the table
 
-``PyCustomSlot *PyCustomSlots_Find(PyObject *obj, uint32_t id, Py_ssize_t expected_pos)``
+``PyCustomSlot *PyCustomSlots_Find(PyObject *obj, uintptr_t id, Py_ssize_t expected_pos)``
     Search the table for a matching slot; returns `NULL` if none is found.
     Pass the slots' expected position to `expected_pos` (or 0 if none
     is defined).
+
 
 Provider API
 ------------
@@ -240,21 +260,23 @@ i.e. the direct match is ``likely``).
 The custom slot ID space
 ------------------------
 
-The most significant 8 bits of the ``uint32_t`` denote a
-"registrar". Each registrar determines the use of the remaining 24
+As mentioned above, when least significant bit is 1 the slot IDs
+are statically assigned.
+
+For static assignment we assume that the ``uintptr_t`` is at 
+least 32 bits; any higher bits should always be 0.
+
+The most significant 8 bits (of the lower 32) denote a
+"registrar". Each registrar determines the use of the remaining 23
 bits, but a recommendation, from most to least significant, is:
 
  * 8 bits: Registrar (required)
  * 16 bits: Which custom slot "idea"
- * 8 bits: Which backwards-incompatible version of the idea
+ * 7 bits: Which backwards-incompatible version of the idea
+ * 1 bit: Should be set to 1 for static IDs (***PS! required***)
 
-Backwards-compatible changes should be noted in the ``flag`` field
-rather than the ID.
-
-When lookup up a slot following this recommendation, one should
-therefore ``&`` the ID with the proper mask for the flags,
-which is the purpose of the ``mask`` argument to ``PyCustomSlots_Find``
-(that is, to match any flags, pass ``0xffffff00``).
+See the documentation of ``PyCustomSlots_Find`` for how to use the
+flag bits.
 
 Special IDs:
 
@@ -265,13 +287,10 @@ ID space (most significant 8 bits):
 
  * 0x00: Reserved
  * 0x01: For internal/personal use, never use in released libraries
- * 0x02: NumFOCUS SEPs, NumPy, SciPy
- * 0x03: Cython
+ * 0x02: Cython
+ * 0x03: NumFOCUS SEPs, NumPy, SciPy
  * 0x04-...: Whoever asks
 
-The ID space is intentially kept tight for now; because eventually one
-may want to dynamically allocate such IDs (like a dynamic interface
-interning scheme).
 
 Discussion
 ----------
