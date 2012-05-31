@@ -1,4 +1,0 @@
-sep
-===
-
-Scientific Enhancement Proposals
