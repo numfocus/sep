@@ -56,7 +56,7 @@ https://github.com/dagss/pyextensibletype
 Every type exporting custom slots a) sets a new metaclass
 ``extensibletype`` as its metaclass (the ``ob_type->ob_type`` of the
 object instance), and b) sets ``tp_flags`` bit 22, which we hijack for
-this purpose (``ob_type->tp_flags &
+this purpose (``ob_type->tp_flags |=
 PyExtensibleType_TPFLAGS_IS_EXTENSIBLE``).  The metaclass is necesarry
 to ensure that the custom slots table is inherited to subclasses
 created in Python.  See the discussion section for justifications for
@@ -66,7 +66,7 @@ Having a run-time dependency would be a significant disadvantage.
 Instead, each participating provider library should contain the code for the
 ``extensibletype`` metaclass, provided in a short header file
 (``include/extensibletype.h``). The first such module that gets initialized
-puts the metaclass in the ``extensibletype_v1`` in the ``_extensibletype``
+puts the metaclass in the ``extensibletype_v1`` attribute in the ``_extensibletype``
 module; later modules simply look up the metaclass there.
 
 The custom slot table
@@ -93,34 +93,35 @@ Custom slots are not required to have any order; types are expected to
 know which custom slot is most performance critical and put that first
 in the list.
 
-The ``id`` comes in two categories, statically defined ID and pointer
+The ID comes in two categories, allocated ID and pointer
 ID.
 
-Statically defined IDs
-''''''''''''''''''''''
+Allocated IDs
+'''''''''''''
 
 These are indicated by the least significant bit being 1.  The
 ID space is partitioned as described in a separate section below.
-
-On could also use part of the static ID space for run-time allocated
-IDs in an interning scheme, as long as this doesn't cause any
-conflicts.
+Typically an ID is defined statically (e.g., a SEP 2xx defines it).
+However, one can also reserve some parts of the ID space for
+IDs allocated incrementally at run-time.
 
 
 Pointer ID
 ''''''''''
 
-These are a memory address casted to an int. The least significant bit
-must be zero (i.e. an address aligned to at least 2 bytes, which
-should be the case for any relevant object).  For instance, if there's
-a run-time object specifying an "interface" that both the exporter and
-consumer has access to, then they can use its address be able to
-communicate.
+These are casted memory addresses. The least significant bit must be
+zero (i.e. an address aligned to at least 2 bytes, which should be the
+case for any relevant object).  For instance, if there's a run-time
+object specifying an "interface" that both the exporter and consumer
+has access to, then they can use its address be able to communicate.
 
 This SEP does not specify a specific scheme for such interface
 creation or any other interning scheme. There could in fact be
-multiple such schemes operating in parallel, since they will never claim
+multiple such schemes operating in parallel, since they never claim
 the same address.
+
+Interning through a table lookup (using running IDs) should use some
+section of the ID space reserved for the interning mechanism instead.
 
 
 Slot expected position
@@ -178,10 +179,55 @@ Provider API
 ------------
 
 The provider API is found in ``include/extensibletype.h``, and
-requires detailed knowledge of the implementation mechanism.
+requires detailed knowledge of the implementation mechanism (so go read it).
 
 To allow sub-classing Python side, the "object struct" must be based on
 ``PyHeapTypeObject`` rather than ``PyTypeObject``.
+A typical type object follows (full example in ``demo/provider_c_code.h``).
+
+**Note**: Even if the binary layout follows that of heap-allocated
+types, there is nothing heap-allocated about a typical exporter type.
+Also, in the example below, one could set ``tp_as_number`` to ``0``, but the
+``PyNumberMethods`` struct would still have to be present.
+
+::
+
+    PyHeapExtensibleTypeObject MyProvider_Type =
+    {
+        /* PyHeapTypeObject etp_heaptype */
+        {
+            /* PyTypeObject ht_type */
+            {
+                PyVarObject_HEAD_INIT(0, 0),
+                "myprovidertype", /*tp_name*/,
+                sizeof(MyProvider_Object), /* tp_basicsize */
+                0,                        /* tp_itemsize */
+                ...
+                &MyProvider_Type.etp_heaptype.as_number, /*tp_as_number*/
+                &MyProvider_Type.etp_heaptype.as_sequence, /*tp_as_sequence*/
+                &MyProvider_Type.etp_heaptype.as_mapping, /*tp_as_mapping*/
+                ...
+                &MyProvider_Type.etp_heaptype.as_buffer, /*tp_as_buffer*/
+                ...
+            },
+
+            /* PyNumberMethods as_number */
+            {
+                0, /*nb_add*/
+                ...
+            },
+
+            ...
+
+            0, /* ht_name */
+            0 /* ht_slots */
+    
+        }, /* end of PyHeapTypeObject */
+
+        2, /* etp_custom_slot_count */
+        my_custom_slots /* etp_custom_slot_table */
+    };
+
 
 ``static int PyExtensibleType_Ready(PyHeapExtensibleTypeObject *type, Py_ssize_t slot_table_size)``
     Called to initialize a statically allocated extensible type.
@@ -275,15 +321,15 @@ bits, but a recommendation, from most to least significant, is:
  * 7 bits: Which backwards-incompatible version of the idea
  * 1 bit: Should be set to 1 for static IDs (***PS! required***)
 
-See the documentation of ``PyCustomSlots_Find`` for how to use the
-flag bits.
 
-Special IDs:
+Special IDs
+'''''''''''
 
  * 0x00000000: Reserved for now
  * 0x00000001: Use if pre-padding the table is needed
 
-ID space (most significant 8 bits):
+ID space (most significant 8 bits)
+''''''''''''''''''''''''''''''''''
 
  * 0x00: Reserved
  * 0x01: For internal/personal use, never use in released libraries
