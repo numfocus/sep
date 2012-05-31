@@ -228,6 +228,7 @@ lowest 24 bits indicate properties about the function ("requires GIL",
 (Alternatively, the lowest three bits of the signature pointer could
 be used for flags...)
 
+
 Discussion of table approaches
 ''''''''''''''''''''''''''''''
 
