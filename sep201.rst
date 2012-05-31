@@ -130,20 +130,8 @@ together in the same memory area, which requires variable-size
 entries; but still have some structure to allow for quick scanning
 through the list.
  
-First, assume that every signature can be represented in 8 bytes
-or less. Then the table would have entries like this::
-
-    typedef struct {
-        uint64_t signature;
-        void *funcptr;
-    } entry;
-
-where the signature is zero-padded. This representation covers a
-majority of the cases (in particular if an efficient coding is
-chosen, see below).
-
-However, we must also accomodate longer signatures. Therefore
-the following format is used:
+The table is composed of multiple variable-size entries, each
+on the following form:
 
 === ===============================================================
 .   First 8 bytes of signature (incl. "start signature mark")
