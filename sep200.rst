@@ -268,11 +268,10 @@ in ``etp_count``, while the table size is passed to
 custom slots just like the built-in slots:
 
  - Slots are inherited from the parent class by prepending them to the
-   table. The (id, flags, data)-struct is simply copied by value -- it
-   is assumed that the data pointer will stay alive
+   table. The ``PyCustomSlot`` struct is simply copied by value.
 
  - If the same ID is present in the custom slot table of the child,
-   the parent slot is not inherited
+   the parent slot is not inherited.
 
  - If the final number of slots is larger than the count passed to
    ``PyExtensibleType_Ready``, an exception is raised.
@@ -331,8 +330,8 @@ bits, but a recommendation, from most to least significant, is:
 Special IDs
 '''''''''''
 
- * 0x00000000: Reserved for now
- * 0x00000001: Use if pre-padding the table is needed
+ * 0x00000000: Empty table position (use for trailing slots when over-allocating table)
+ * 0x00000001: Use this if skipping table slots is needed
 
 ID space (most significant 8 bits)
 ''''''''''''''''''''''''''''''''''
