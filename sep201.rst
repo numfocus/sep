@@ -213,8 +213,10 @@ E.g., one could have::
         void (*release_interned_string)(void *self, char *interned_str);
     } interner_interface;
 
-Then, each exporter of native-callables would need to carry an implementation
-of this and register it in a central location.
+Then, each exporter of native-callables would need to carry an
+implementation of this and rendezvous on it it in a central location
+(since a common NumPy and Cython dependency would be a major
+drawback).
 
 **Flag information:** One can no longer mask out flag information (e.g.,
 whether function requires GIL or not).
