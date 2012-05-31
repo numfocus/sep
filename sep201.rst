@@ -1,0 +1,288 @@
+SEP 201: Native dispatches through Python callables
+===================================================
+
+======   ====================
+Author   Dag Sverre Seljebotn
+Status   Draft
+======   ====================
+
+Overview
+--------
+
+Many callable objects are simply wrappers around native code.  This
+holds for any Cython function, f2py functions, manually
+written CPython extensions, Numba, etc.
+
+Obviously, when native code calls other native code, it would be nice
+to skip the significant cost of boxing and unboxing all the arguments.
+
+Motivating example (looking a year or two into the future)::
+
+    @numba
+    def f(x): return 2 * x
+
+    @cython.inline
+    def g(x : cython.double): return 3 * x
+
+    from fortranmod import h
+
+    print f(3)
+    print g(3)
+    print h(3)
+    print scipy.integrate.quad(f, 0.2, 3) # fast callback!
+    print scipy.integrate.quad(g, 0.2, 3) # fast callback!
+    print scipy.integrate.quad(h, 0.2, 3) # fast callback!
+
+
+Boundaries of this SEP
+----------------------
+
+We include the possibility that an exporter has many
+signatures/instantiations (e.g., ``np.sin`` may export a signature per
+floating point type, real and complex).
+
+We include the possibility that a JIT caller may want to inspect
+the signature list of an object and use it in a type-inference scheme.
+Therefore we export a full table of function signatures, rather than
+having a ``get_function_pointer`` function.
+
+For a given call, the exporter is assumed to have a fixed set of
+signatures.  We exclude the possibility of negotiating signatures
+where both the caller and callee can adapt (JIT<->JIT). A situation
+where the callee can generate new instantiations depending on the
+needs of the caller could become quite involved, so we simply push
+that off until a possible later SEP.
+
+However, the function table of an object can be modified on the fly
+(for instance whenever a new instantiation is requested by some other
+scheme).
+
+
+Description of custom slot
+--------------------------
+
+You typically have a general type for your callable (e.g., ufuncs, or
+a ``CyFunction`` type), while each instance represents a different
+callable with a different signature. Therefore the information is
+tagged to the object, not the type.
+`SEP 200 <https://github.com/numfocus/sep/blob/master/sep200.rst>`_ is
+used to annotate the objects.
+
+IDs:
+ 
+::
+
+    #define PYCUSTOMSLOT_NATIVECALLABLE_ID 0x04000001
+    #define PYCUSTOMSLOT_NATIVECALLABLE_FAVPOS 0
+
+The slot data should be interpreted as an offset against the ``PyObject*``,
+at which location a **pointer** to the table can be found.
+A snippet of code says more than thousand words::
+
+    PyCustomSlot *slot = PyCustomSlots_Find(obj, PYCUSTOMSLOT_NATIVECALLABLE_ID,
+                                            PYCUSTOMSLOT_NATIVECALLABLE_FAVPOS);
+    if (slot) {
+        PyNativeCallableTable **tableptr = (char*)obj + custom_slot->data.objoffset;
+        PyNativeCallableTable *table = *tableptr;
+        ...
+    }
+
+It is OK to access the native-call table without holding the GIL. This
+should of course only be used to call functions that state in their
+signature that they don't need the GIL.
+
+This is important for JITted callables who would like to rewrite their
+table as more specializations gets added; if one needs to reallocate
+the table, the old table must linger along long enough that all
+threads that are currently accessing it are done with it.
+
+
+Native dispatch table
+---------------------
+
+The final format for the descriptor table is not agreed upon yet; this
+sums up the major alternatives. Benchmarks indicate that the alternatives
+perform the same, it is primarily a question of taste as both approaches
+has some drawbacks.
+
+In any case, the idea is that there is a table that maps
+function signatures to function pointers that can be called.
+The signatures are simple strings (e.g., ``"iid"`` for ``int f(int, double)``)
+and described in more detail below.
+
+Some principles:
+
+ * The call should be very fast (so that Cython doesn't need to do function
+   pointer caching, which anyway doesn't work in all situations)
+
+ * As described above, a JIT should be able to parse the signature
+   format string
+
+ * The function table should ideally be useable from non-Python code,
+   and, e.g., as easily as possible used in Julia for Julia<->Python bridge
+
+
+Approach 1: Comparison of deterministic keys
+''''''''''''''''''''''''''''''''''''''''''''
+
+The idea is to store the full signatures and the function pointers
+together in the same memory area, which requires variable-size
+entries; but still have some structure to allow for quick scanning
+through the list.
+ 
+First, assume that every signature can be represented in 8 bytes
+or less. Then the table would have entries like this::
+
+    typedef struct {
+        uint64_t signature;
+        void *funcptr;
+    } entry;
+
+where the signature is zero-padded. This representation covers a
+majority of the cases (in particular if an efficient coding is
+chosen, see below).
+
+However, we must also accomodate longer signatures. Therefore
+the following format is used:
+
+=== ===============================================================
+.   First 8 bytes of signature (incl. "start signature mark")
+.   [Next 16 bytes of signature] (repeat ``n`` times for ``n>=0``)
+.   8 bytes of ``funcptr``
+=== ===============================================================
+
+The idea is then to encode the signature in such a way that callers
+looking for a specific signature can scan the table in 16-byte
+increments, ignoring the size of each entry.
+
+Some notes:
+
+ * The ``funcptr`` is 8 bytes also on 32-bit systems (to keep the
+   table structure stable across platforms)
+
+ * A terminating 0 must be included on all signatures (even if
+   that is what makes it spill over)
+
+ * The encoding must be picked so that 
+   3rd, 5th, 7th, ... 8-byte parts of long signatures do not
+   collide with the beginning of any signature
+
+**Encoding:** Optionally, the approach above can be made efficient for
+larger signatures by using a more efficient encoding than ASCII. E.g.,
+an encoding could use 4 bits for the 12 most common symbols and 8 bits
+for 64 symbols (for a total of 78 symbols), of which some could be
+letter combinations ("Zd", "T{"). This should be reasonably simple to
+encode and decode.
+
+The SEP should provide C routines in a header file to work with the
+encoded signatures.
+
+**Flag information:** Since it is trivial to compare keys under a mask
+while scanning, flags can be embedded in the signature. For instance,
+if you don't care whether the function needs the GIL or not, because
+you have the GIL, then that information could be masked out while
+comparing.
+
+Approach 2: Interned strings
+''''''''''''''''''''''''''''
+
+Do the obvious thing, but rely on interning the signature strings
+for speed::
+
+    typedef struct {
+        char *signature; /* interned! */
+        uintptr_t flags; /* see section below */
+        void *funcptr;
+    } PyNativeCallableEntry;
+
+    typedef struct {
+        Py_ssize_t count;
+        PyNativeCallableEntry entries[0]; /* variable-size */
+    } PyNativeCallableTable;
+
+The interning of the signature pointers is vital to performance of the
+lookups. In order to intern a signature, there must be a run-time
+string interning registry. Ideally, this would be GIL-less and usable
+for non-Python code. Also ideally, one pulls this off without a common
+runtime dependency.
+
+E.g., one could have::
+
+    typedef struct {
+        char* (*acquired_interned_string)(void *self, char *str, char **errmsg);
+        void (*release_interned_string)(void *self, char *interned_str);
+    } interner_interface;
+
+Then, each exporter of native-callables would need to carry an implementation
+of this and register it in a central location.
+
+**Flag information:** One can no longer mask out flag information (e.g.,
+whether function requires GIL or not).
+
+Therefore we use a separate flag field in the record. We can require
+that the highest 8 bits indicate ABI versioning (code should for now
+additionally require them to be 0x00 or ignore the record) and the
+lowest 24 bits indicate properties about the function ("requires GIL",
+"will acquire GIL", "can raise exception").
+
+(Alternatively, the lowest three bits of the signature pointer could
+be used for flags...)
+
+Discussion of table approaches
+''''''''''''''''''''''''''''''
+
+**On approach 1:** If it's hard to explain, it's a bad idea.
+
+On the other hand, the comparison of deterministic keys has the
+advantage that it is entirely state-less. One does not need to
+remember to intern and release the strings, and one can in principle
+store the table as a C literal.
+
+**On approach 2:** The interning scheme has the
+disadvantage that a relatively complex interning mechanism. It could
+be made simpler if one drops the requirements for a GIL-less and
+Python-less interning registry.
+
+A compromise could be to use the API above, but initially require the
+GIL, so that the backing implementation could use Python dicts (one to
+do string->string mapping, and one id(string)->refcount mapping). Then
+the GIL requirement could be lifted eventually.
+
+**Other approaches:**
+Some other approaches has been discussed and ruled out. Storing a
+cryptographic hash makes it impossible for JIT callers to parse the
+signature information and use it for type inference. Storing an
+interned ``PyObject*`` means that the table cannot be passed around
+as easily in C code without a Python dependency (and the cost to
+avoid that is quite minor).
+
+
+Signature strings
+-----------------
+
+The work on fully specifying the signature strings is tedious and best
+done while implementing. It should probably be done by the first
+person to implement this SEP. Also, it will never be finished; one can
+add features and meanings as long as the signature format doesn't
+conflict with existing encodings.
+
+Example: The function::
+
+    int f(double x, float* y);
+
+would, e.g., have the signature string ``"i:d&f"``. The format is:
+(Type of function, return value, arguments). 
+
+Return value and arguments would follow the PEP3118 extensions of the
+struct-module format string, but with some modifications:
+
+ * The format should be canonical and fit for ``strcmp`` comparison:
+   No whitespace, no field names, no alignment information for
+   arguments and some canonical choice of alignment information for
+   struct arguments
+  
+ * Additions made as they are needed. Example 1: Support for
+   Cython-specific constructs like memoryview slices (so that arrays
+   with strides and shape can be passed faster than passing an
+   ``"O"``). Example 2: The exception return code is an
+   out-argument.
