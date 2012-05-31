@@ -53,8 +53,14 @@ Implementation and lack of runtime dependency
 An implementation is available from
 https://github.com/dagss/pyextensibletype
 
-The implementation is based on a) a metaclass ``extensibletype``, b) hijacking
-``tp_flags`` bit 22 to denote types with this metaclass in its hierarchy (see discussion).
+Every type exporting custom slots a) sets a new metaclass
+``extensibletype`` as its metaclass (the ``ob_type->ob_type`` of the
+object instance), and b) sets ``tp_flags`` bit 22, which we hijack for
+this purpose (``ob_type->tp_flags &
+PyExtensibleType_TPFLAGS_IS_EXTENSIBLE``).  The metaclass is necesarry
+to ensure that the custom slots table is inherited to subclasses
+created in Python.  See the discussion section for justifications for
+also using the flag bit.
 
 Having a run-time dependency would be a significant disadvantage.
 Instead, each participating provider library should contain the code for the
@@ -98,16 +104,28 @@ Custom slots are not required to have any order; types are expected to
 know which custom slot is most performance critical and put that first
 in the list.
 
-Note, however, that a custom slot definition can say that it expects
-to be found after a given location. For instance, if the NumPy array
-grows four different C vtables, then the last one can indicate that it
-should always be found as the 4th slot or later on any type, so that
-users can optimize for the common case of NumPy arrays. Other less
-featureful array types would then need to pre-pad the table with ID
-``0x1`` (see below).  This scheme should mean there's almost never
-branch misses for the "typical" usecases, since each group of custom slots
+Slot expected position
+''''''''''''''''''''''
+
+Slots can define an *expected position*, which consumers check before
+scanning the entire list. For instance, if the NumPy array grows four
+different C vtables, then the last one can indicate that it is
+expected to be found at the 4th slot. Other less featureful array
+types supporting that slot may pre-pad the table with ID ``0x1`` (see
+below) to put the slot in its preferred position. 
+
+The value of the expected position is in that the CPU can continue
+execution with the slot in that position while the check goes on in
+parallel in the CPU pipeline, *not* simply that fewer elements are
+scanned.
+
+The expected position scheme should mean there's almost never branch
+misses for the typical usecases, since each group of custom slots
 likely to be found together can negotiate on a position in the table
-which the branch predictor should assume.
+which the branch predictor should assume. For weirder objects that,
+e.g., supports both NumPy vtables and acts as a native callable, there
+will of course be conflicts and the table must be scanned.
+
 
 
 Consumer API
@@ -131,11 +149,10 @@ has a guaranteed reference to the type object.
 ``PyCustomSlot *PyCustomSlots_Table(obj)``
     Get a pointer to the table
 
-``PyCustomSlot *PyCustomSlots_Find(PyObject *obj, uint32_t id, Py_ssize_t start)``
+``PyCustomSlot *PyCustomSlots_Find(PyObject *obj, uint32_t id, Py_ssize_t expected_pos)``
     Search the table for a matching slot; returns `NULL` if none is found.
-    The search happens at the position given by `start`; usually you pass ``0``,
-    but if the custom slot is documented to always be found at a location ``>= n``
-    in the table, pass in ``n``.
+    Pass the slots' expected position to `expected_pos` (or 0 if none
+    is defined).
 
 Provider API
 ------------
@@ -171,7 +188,7 @@ To allow sub-classing Python side, the "object struct" must be based on
 Subclassing
 '''''''''''
 
-*Statically allocated C subclasses:* Since ``etp_custom_slots`` is
+**Statically allocated C subclasses:** Since ``etp_custom_slots`` is
 statically allocated, it should be over-allocated and padded with
 slots with ``0`` as ID. The number of non-zero slots should be filled
 in ``etp_count``, while the table size is passed to
@@ -188,7 +205,7 @@ custom slots just like the built-in slots:
  - If the final number of slots is larger than the count passed to
    ``PyExtensibleType_Ready``, an exception is raised.
 
-*Heap-allocated Python classes:* The metaclass ensures that the custom
+**Heap-allocated Python classes:** The metaclass ensures that the custom
 slots of the parent is copied also to Python classes inheriting from
 classes with custom slots. However, there is no mechanism for changing
 the table of custom slots (the table pointer is simply set to the
@@ -203,7 +220,8 @@ Benchmark results
 -----------------
 
 The penalty of a branch-predicted table lookup in a micro-benchmark
-was 1.08 ns on a 1.87 GHz (Intel Core i7 Q 840).
+was 0.54 ns for one particular test on a 1.87 GHz (Intel Core i7 Q
+840).
 
 Changing to a format where the table was embedded directly, loosing
 one pointer indirection, did not change the numbers at all.  Also,
@@ -275,7 +293,7 @@ Hijacking bit 22 in ``tp_flags`` has the following advantages:
 The disadvantage is of course that we hijack a flag, and we have no guarantee
 that other Python libraries are not doing the same.
 
-At any rate, if a new Python version uses all available flag bits (and
+If a new Python version uses all available flag bits (and
 this SEP is not accomodated by any PEPs in the meantime), one can
 switch to walking ``ob_type`` and ``tp_base`` rather than checking
 ``tp_flags``.
