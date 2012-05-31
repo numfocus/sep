@@ -334,8 +334,9 @@ ID space (most significant 8 bits)
  * 0x00: Reserved
  * 0x01: For internal/personal use, never use in released libraries
  * 0x02: Cython
- * 0x03: NumFOCUS SEPs, NumPy, SciPy
- * 0x04-...: Whoever asks
+ * 0x03: NumPy
+ * 0x04: NumFOCUS SEPs
+ * 0x05-...: Whoever asks
 
 
 Discussion
