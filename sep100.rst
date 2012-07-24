@@ -34,7 +34,7 @@ uses this citations file as a reference for their own publications.  They
 would also be asked to submit their articles back to this file for 
 posterity.
 
-The web interface to this file would likely be hosted at `http://numfocus.org/`_.
+The web interface to this file would likely be hosted at http://numfocus.org/.
 It should be a searchable page similar to the 
 `FLASH publication list <http://flash.uchicago.edu/site/publications/flash_pubs.shtml>`_.
 This will provide an easy place to refer potential funders to.
