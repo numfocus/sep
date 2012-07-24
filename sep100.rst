@@ -1,0 +1,50 @@
+SEP 100 - Citations List
+=========================================================
+
+======   ====================
+Author   Anthony Scopatz
+Status   Draft
+======   ====================
+
+
+Overview
+--------
+At SciPy 2012, there was a lot of discussion around how to 
+legitimize and formalize our activities - especially in the 
+eyes of funding agencies.  One mechanism to prove our value, 
+to computational science would be to have a visible, searchable 
+database of citations.  This would include papers that discuss: 
+
+* Science applications which use Python,
+* General purpose packages (NumPy, SciPy, IPython, etc.),
+* Domain specific packages, 
+* and new methods primarily implemented in any of the above.
+
+Proposal
+--------
+This proposal aims to develop two resources:
+
+* A ``scipy.bib`` file,
+* A web interface to this file. 
+
+The ``scipy.bib`` file would be a normal bibtex file hosted on GitHub.
+This file would then be able to be added to by the community via the
+pull request mechanism.  Individuals publishing with Python could then 
+uses this citations file as a reference for their own publications.  They
+would also be asked to submit their articles back to this file for 
+posterity.
+
+The web interface to this file would likely be hosted at `numfocus.org`_.
+It should be a searchable page similar to the 
+`FLASH publication list <http://flash.uchicago.edu/site/publications/flash_pubs.shtml>`_.
+This will provide an easy place to refer potential funders to.
+
+
+Discussion
+----------
+Please visit the following threads for more information:
+
+* https://groups.google.com/forum/?fromgroups#!topic/numfocus/S0g1428DX3U
+* https://groups.google.com/forum/?fromgroups#!topic/numfocus/GT35Y1uq7ew
+* https://groups.google.com/forum/?fromgroups#!topic/numfocus/-tBHj1AT8fA
+
